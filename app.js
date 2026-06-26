@@ -1,10 +1,7 @@
 'use strict';
 
-// ── BASE URL (proxy path — works on VPS with server.js) ──────────────────────
-// All /api/* requests go through your Node proxy → admin.otpservice.xyz
 const BASE = '/api/stubs/handler_api.php';
 
-// ── STATE ────────────────────────────────────────────────────────────────────
 let API_KEY   = '';
 let numbers   = [];
 let rowCount  = 0;
@@ -12,7 +9,6 @@ let autoTimer = null;
 let multiActive = false;
 let multiFrames = [];
 
-// ── DOM REFS ─────────────────────────────────────────────────────────────────
 const apiGate        = document.getElementById('apiGate');
 const appWrap        = document.getElementById('appWrap');
 const gateKey        = document.getElementById('gateKey');
@@ -35,11 +31,9 @@ const clearAllBtn    = document.getElementById('clearAll');
 const clearLogBtn    = document.getElementById('clearLog');
 const logBox         = document.getElementById('logBox');
 const balanceDisplay = document.getElementById('balanceDisplay');
-const refreshBalance = document.getElementById('refreshBalance');
 const changeKey      = document.getElementById('changeKey');
 const toast          = document.getElementById('toast');
 
-// ── HELPERS ──────────────────────────────────────────────────────────────────
 function showToast(msg, dur = 2800) {
   toast.textContent = msg;
   toast.classList.add('show');
@@ -63,35 +57,68 @@ function gateMsg(msg, type) {
   gateStatus.className   = 'gate-status ' + (type || '');
 }
 
-// ── API FETCH ─────────────────────────────────────────────────────────────────
 async function apiFetch(params) {
   const url = new URL(BASE, location.origin);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const text = await res.text();
+  // API sometimes returns plain text like INVALID_ACTION, NO_BALANCE etc
+  try { return JSON.parse(text); } catch { return { _raw: text }; }
 }
 
-// ── KEY GATE ──────────────────────────────────────────────────────────────────
+// ── KEY GATE ─────────────────────────────────────────────────────────────────
+// Valid actions are only: getNumber, getOtp, cancelNumber
+// We verify the key by calling getNumber — if key is wrong we get NO_KEY or similar
+// If key is right we get success:true (number bought) or a known error like NO_BALANCE
 async function verifyKey(key) {
   gateMsg('Checking key…', 'checking');
   gateVerify.disabled = true;
   try {
-    const data = await apiFetch({ action: 'getBalance', api_key: key });
-    if (data.success || data.balance !== undefined) {
-      const bal = parseFloat(data.balance || data.updatedBalance || 0).toFixed(2);
-      gateMsg(`✓ API key valid! Balance: ₹${bal}`, 'ok');
-      API_KEY = key;
-      localStorage.setItem('otpm_key', key);
+    const data = await apiFetch({ action: 'getNumber', api_key: key, service: 'jio', server: 3, operator: 0 });
+
+    const raw = data._raw || '';
+
+    // Bad key responses
+    if (raw === 'NO_KEY' || raw === 'BAD_KEY' || raw === 'INVALID_KEY') {
+      gateMsg('✗ Invalid API key.', 'err');
+      log('Key rejected: ' + raw, 'err');
+      gateVerify.disabled = false;
+      return;
+    }
+
+    // Good key — either got a number or a balance/service error (key itself is valid)
+    API_KEY = key;
+    localStorage.setItem('otpm_key', key);
+    log('API key verified.', 'ok');
+
+    if (data.success && data.data) {
+      // Actually bought a number during verify — add it
+      const bal = parseFloat(data.data.updatedBalance || 0).toFixed(2);
       balanceDisplay.textContent = `₹${bal}`;
-      log(`API key verified. Balance: ₹${bal}`, 'ok');
+      gateMsg(`✓ Key valid! Balance: ₹${bal}`, 'ok');
       setTimeout(() => {
         apiGate.style.display = 'none';
         appWrap.style.display = '';
-      }, 900);
+        // Add the number that was bought during verify
+        const num = {
+          id: ++rowCount,
+          txnId: data.data.transactionId,
+          phone: data.data.phoneNumber,
+          otp: null,
+          status: 'active'
+        };
+        numbers.push(num);
+        addRow(num);
+        pollOtp(num);
+      }, 800);
     } else {
-      gateMsg('✗ Invalid key or API error. Try again.', 'err');
-      log('Key verification failed: ' + JSON.stringify(data), 'err');
+      // Key is valid but got NO_BALANCE or similar — still let them in
+      gateMsg(`✓ Key valid! (${raw || JSON.stringify(data)})`, 'ok');
+      setTimeout(() => {
+        apiGate.style.display = 'none';
+        appWrap.style.display = '';
+      }, 800);
     }
   } catch (e) {
     gateMsg('✗ Could not reach API. Check connection.', 'err');
@@ -116,19 +143,6 @@ changeKey.addEventListener('click', () => {
   gateMsg('');
 });
 
-// ── BALANCE ───────────────────────────────────────────────────────────────────
-async function fetchBalance() {
-  try {
-    const data = await apiFetch({ action: 'getBalance', api_key: API_KEY });
-    if (data.success || data.balance !== undefined) {
-      const bal = parseFloat(data.balance || data.updatedBalance || 0).toFixed(2);
-      balanceDisplay.textContent = `₹${bal}`;
-      log(`Balance: ₹${bal}`, 'info');
-    }
-  } catch (e) { log('Balance error: ' + e.message, 'err'); }
-}
-refreshBalance.addEventListener('click', fetchBalance);
-
 // ── BUY NUMBER ────────────────────────────────────────────────────────────────
 async function buyNumber() {
   if (!API_KEY) return;
@@ -143,7 +157,7 @@ async function buyNumber() {
     });
 
     if (!data.success) {
-      const msg = data.message || JSON.stringify(data);
+      const msg = data._raw || data.message || JSON.stringify(data);
       log('Buy failed: ' + msg, 'err');
       setStatus('Failed: ' + msg);
       return null;
@@ -208,7 +222,7 @@ async function cancelNumber(num) {
       updateCount();
     } else {
       showToast('Cancel failed');
-      log('Cancel failed: ' + JSON.stringify(data), 'err');
+      log('Cancel failed: ' + (data._raw || JSON.stringify(data)), 'err');
     }
   } catch (e) { log('Cancel error: ' + e.message, 'err'); }
 }
@@ -220,7 +234,7 @@ function pollOtp(num) {
     if (num.status !== 'active') { clearInterval(iv); return; }
     attempts++;
     const got = await getOtp(num);
-    if (got || attempts >= 20) {          // 20 × 3s = 60 sec max
+    if (got || attempts >= 20) {
       clearInterval(iv);
       if (!got && num.status === 'active') {
         num.status = 'expired';
@@ -328,7 +342,7 @@ autoInterval.addEventListener('input', () => {
 });
 
 // ── MULTI CLICK ───────────────────────────────────────────────────────────────
-const MULTI_MS = Math.round(1000 / 15); // ~67ms
+const MULTI_MS = Math.round(1000 / 15);
 
 function startMulti() {
   multiActive = true;
@@ -376,4 +390,4 @@ if (savedKey) {
   verifyKey(savedKey);
 } else {
   log('Enter API key to start.', 'info');
-    }
+}
