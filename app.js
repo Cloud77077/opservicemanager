@@ -41,8 +41,8 @@ function showToast(msg, dur = 2800) {
 }
 
 function log(msg, type = 'info') {
-  const now  = new Date().toLocaleTimeString('en-IN', { hour12: false });
-  const el   = document.createElement('div');
+  const now = new Date().toLocaleTimeString('en-IN', { hour12: false });
+  const el  = document.createElement('div');
   el.className = 'log-entry';
   el.innerHTML = `<span class="log-time">${now}</span><span class="log-msg log-${type}">${msg}</span>`;
   logBox.appendChild(el);
@@ -51,10 +51,9 @@ function log(msg, type = 'info') {
 }
 
 function setStatus(msg) { buyStatus.textContent = msg; }
-
 function gateMsg(msg, type) {
   gateStatus.textContent = msg;
-  gateStatus.className   = 'gate-status ' + (type || '');
+  gateStatus.className = 'gate-status ' + (type || '');
 }
 
 async function apiFetch(params) {
@@ -63,58 +62,61 @@ async function apiFetch(params) {
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
-  // API sometimes returns plain text like INVALID_ACTION, NO_BALANCE etc
   try { return JSON.parse(text); } catch { return { _raw: text }; }
 }
 
-// ── KEY GATE ─────────────────────────────────────────────────────────────────
-// Valid actions are only: getNumber, getOtp, cancelNumber
-// We verify the key by calling getNumber — if key is wrong we get NO_KEY or similar
-// If key is right we get success:true (number bought) or a known error like NO_BALANCE
+// ── KEY GATE ──────────────────────────────────────────────────────────────────
+// We verify by calling getNumber. Responses mean:
+//   NO_KEY / BAD_KEY / INVALID_KEY  → key is wrong
+//   NO_NUMBERS / NO_BALANCE / success:true → key is valid
 async function verifyKey(key) {
   gateMsg('Checking key…', 'checking');
   gateVerify.disabled = true;
   try {
-    const data = await apiFetch({ action: 'getNumber', api_key: key, service: 'jio', server: 3, operator: 0 });
+    const data = await apiFetch({
+      action: 'getNumber', api_key: key,
+      service: 'jio', server: 3, operator: 0
+    });
 
-    const raw = data._raw || '';
+    const raw = (data._raw || '').toString().trim();
 
-    // Bad key responses
-    if (raw === 'NO_KEY' || raw === 'BAD_KEY' || raw === 'INVALID_KEY') {
-      gateMsg('✗ Invalid API key.', 'err');
+    // These mean the key itself is bad
+    const badKeyResponses = ['NO_KEY', 'BAD_KEY', 'INVALID_KEY', 'ERROR_KEY'];
+    if (badKeyResponses.includes(raw)) {
+      gateMsg('✗ Invalid API key. Check and try again.', 'err');
       log('Key rejected: ' + raw, 'err');
       gateVerify.disabled = false;
       return;
     }
 
-    // Good key — either got a number or a balance/service error (key itself is valid)
+    // Everything else means the key is valid
     API_KEY = key;
     localStorage.setItem('otpm_key', key);
-    log('API key verified.', 'ok');
 
-    if (data.success && data.data) {
-      // Actually bought a number during verify — add it
+    if (data.success && data.data && data.data.phoneNumber) {
+      // Got a number during verify — show it
       const bal = parseFloat(data.data.updatedBalance || 0).toFixed(2);
       balanceDisplay.textContent = `₹${bal}`;
       gateMsg(`✓ Key valid! Balance: ₹${bal}`, 'ok');
+      log('Key verified. Balance: ₹' + bal, 'ok');
       setTimeout(() => {
         apiGate.style.display = 'none';
         appWrap.style.display = '';
-        // Add the number that was bought during verify
         const num = {
           id: ++rowCount,
           txnId: data.data.transactionId,
           phone: data.data.phoneNumber,
-          otp: null,
-          status: 'active'
+          otp: null, status: 'active'
         };
         numbers.push(num);
         addRow(num);
         pollOtp(num);
       }, 800);
     } else {
-      // Key is valid but got NO_BALANCE or similar — still let them in
-      gateMsg(`✓ Key valid! (${raw || JSON.stringify(data)})`, 'ok');
+      // NO_NUMBERS, NO_BALANCE, etc — key is fine, just no stock right now
+      const display = raw || data.message || 'Ready';
+      gateMsg(`✓ Key valid! (${display})`, 'ok');
+      log('Key verified. API says: ' + display, 'ok');
       setTimeout(() => {
         apiGate.style.display = 'none';
         appWrap.style.display = '';
@@ -149,11 +151,8 @@ async function buyNumber() {
   setStatus('Buying number…');
   try {
     const data = await apiFetch({
-      action:   'getNumber',
-      api_key:  API_KEY,
-      service:  'jio',
-      server:   3,
-      operator: 0
+      action: 'getNumber', api_key: API_KEY,
+      service: 'jio', server: 3, operator: 0
     });
 
     if (!data.success) {
@@ -164,17 +163,15 @@ async function buyNumber() {
     }
 
     const num = {
-      id:     ++rowCount,
-      txnId:  data.data.transactionId,
-      phone:  data.data.phoneNumber,
-      otp:    null,
-      status: 'active'
+      id: ++rowCount,
+      txnId: data.data.transactionId,
+      phone: data.data.phoneNumber,
+      otp: null, status: 'active'
     };
     numbers.push(num);
     addRow(num);
     setStatus(`✓ ${num.phone}  (txn: ${num.txnId})`);
     log(`✓ Bought: ${num.phone} | txn: ${num.txnId}`, 'ok');
-
     if (data.data.updatedBalance !== undefined) {
       balanceDisplay.textContent = `₹${parseFloat(data.data.updatedBalance).toFixed(2)}`;
     }
@@ -191,12 +188,11 @@ async function buyNumber() {
 async function getOtp(num) {
   try {
     const data = await apiFetch({
-      action:        'getOtp',
-      api_key:       API_KEY,
+      action: 'getOtp', api_key: API_KEY,
       transactionId: num.txnId
     });
     if (data.success && data.otp) {
-      num.otp    = data.otp;
+      num.otp = data.otp;
       num.status = 'received';
       updateRow(num);
       log(`✓ OTP for ${num.phone}: ${data.otp}`, 'ok');
@@ -211,8 +207,7 @@ async function getOtp(num) {
 async function cancelNumber(num) {
   try {
     const data = await apiFetch({
-      action:        'cancelNumber',
-      api_key:       API_KEY,
+      action: 'cancelNumber', api_key: API_KEY,
       transactionId: num.txnId
     });
     if (data.success) {
@@ -275,12 +270,11 @@ const STATUS_CLS   = { active:'s-active', received:'s-received', waiting:'s-wait
 const STATUS_LABEL = { active:'Active', received:'Received', waiting:'Waiting', expired:'Expired' };
 
 function rowHTML(num) {
-  const sc = STATUS_CLS[num.status]   || 's-waiting';
+  const sc = STATUS_CLS[num.status] || 's-waiting';
   const sl = STATUS_LABEL[num.status] || num.status;
   const otpHTML = num.otp
     ? `<span class="otp-value">${num.otp}</span>`
     : `<span class="otp-waiting">Waiting…</span>`;
-
   let actHTML = '';
   if (num.status === 'active') {
     actHTML = `<button class="btn btn-success a-getotp">Get OTP</button>
@@ -288,7 +282,6 @@ function rowHTML(num) {
   } else if (num.status === 'received' && num.otp) {
     actHTML = `<button class="btn btn-ghost btn-sm a-copy">Copy OTP</button>`;
   }
-
   return `
     <td class="row-index">${num.id}</td>
     <td><span class="phone-num">${num.phone}</span></td>
@@ -369,7 +362,7 @@ multiToggle.addEventListener('change', () => {
   else stopMulti();
 });
 
-// ── BUY ONCE ─────────────────────────────────────────────────────────────────
+// ── BUY ONCE ──────────────────────────────────────────────────────────────────
 buyOnceBtn.addEventListener('click', buyNumber);
 
 // ── CLEAR ─────────────────────────────────────────────────────────────────────
