@@ -66,67 +66,20 @@ async function apiFetch(params) {
 }
 
 // ── KEY GATE ──────────────────────────────────────────────────────────────────
-// We verify by calling getNumber. Responses mean:
-//   NO_KEY / BAD_KEY / INVALID_KEY  → key is wrong
-//   NO_NUMBERS / NO_BALANCE / success:true → key is valid
-async function verifyKey(key) {
-  gateMsg('Checking key…', 'checking');
-  gateVerify.disabled = true;
-  try {
-    const data = await apiFetch({
-      action: 'getNumber', api_key: key,
-      service: 'jio', server: 3, operator: 0
-    });
-
-    const raw = (data._raw || '').toString().trim();
-
-    // These mean the key itself is bad
-    const badKeyResponses = ['NO_KEY', 'BAD_KEY', 'INVALID_KEY', 'ERROR_KEY'];
-    if (badKeyResponses.includes(raw)) {
-      gateMsg('✗ Invalid API key. Check and try again.', 'err');
-      log('Key rejected: ' + raw, 'err');
-      gateVerify.disabled = false;
-      return;
-    }
-
-    // Everything else means the key is valid
-    API_KEY = key;
-    localStorage.setItem('otpm_key', key);
-
-    if (data.success && data.data && data.data.phoneNumber) {
-      // Got a number during verify — show it
-      const bal = parseFloat(data.data.updatedBalance || 0).toFixed(2);
-      balanceDisplay.textContent = `₹${bal}`;
-      gateMsg(`✓ Key valid! Balance: ₹${bal}`, 'ok');
-      log('Key verified. Balance: ₹' + bal, 'ok');
-      setTimeout(() => {
-        apiGate.style.display = 'none';
-        appWrap.style.display = '';
-        const num = {
-          id: ++rowCount,
-          txnId: data.data.transactionId,
-          phone: data.data.phoneNumber,
-          otp: null, status: 'active'
-        };
-        numbers.push(num);
-        addRow(num);
-        pollOtp(num);
-      }, 800);
-    } else {
-      // NO_NUMBERS, NO_BALANCE, etc — key is fine, just no stock right now
-      const display = raw || data.message || 'Ready';
-      gateMsg(`✓ Key valid! (${display})`, 'ok');
-      log('Key verified. API says: ' + display, 'ok');
-      setTimeout(() => {
-        apiGate.style.display = 'none';
-        appWrap.style.display = '';
-      }, 800);
-    }
-  } catch (e) {
-    gateMsg('✗ Could not reach API. Check connection.', 'err');
-    log('Key check error: ' + e.message, 'err');
+// Just validate key format locally — no API call, no number purchase
+function verifyKey(key) {
+  if (key.length < 20) {
+    gateMsg('✗ Key too short. Check and try again.', 'err');
+    return;
   }
-  gateVerify.disabled = false;
+  gateMsg('✓ Key accepted! Loading…', 'ok');
+  API_KEY = key;
+  localStorage.setItem('otpm_key', key);
+  log('API key set.', 'ok');
+  setTimeout(() => {
+    apiGate.style.display = 'none';
+    appWrap.style.display = '';
+  }, 600);
 }
 
 gateVerify.addEventListener('click', () => {
@@ -156,7 +109,7 @@ async function buyNumber() {
     });
 
     if (!data.success) {
-      const msg = data._raw || data.message || JSON.stringify(data);
+      const msg = data.message || data._raw || JSON.stringify(data);
       log('Buy failed: ' + msg, 'err');
       setStatus('Failed: ' + msg);
       return null;
@@ -217,7 +170,7 @@ async function cancelNumber(num) {
       updateCount();
     } else {
       showToast('Cancel failed');
-      log('Cancel failed: ' + (data._raw || JSON.stringify(data)), 'err');
+      log('Cancel failed: ' + (data.message || data._raw || JSON.stringify(data)), 'err');
     }
   } catch (e) { log('Cancel error: ' + e.message, 'err'); }
 }
